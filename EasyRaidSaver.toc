@@ -1,0 +1,9 @@
+## Interface: 11200
+## Title: EasyRaidSaver 1.0
+## Notes: Automatically mark raid mobs
+## Author: Weird Vibes
+## SavedVariables: EasyRaidSaverDB
+## Version: 1.0
+## Dependencies: Blizzard_RaidUI
+
+EasyRaidSaver.lua
