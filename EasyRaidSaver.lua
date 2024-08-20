@@ -77,7 +77,7 @@ function MakeRaidConfiguration(config)
   for name,group in pairs(config) do
     if not groups[group] then groups[group] = {} end
     table.insert(groups[group], name)
-    print(name  .. ">>".. group)
+    -- print(name  .. ">>".. group)
   end
   return groups
 end
@@ -108,7 +108,7 @@ function StoredRaidConfigToTextRaw(name, temp)
     table.insert(groups, "Group "..i..": " .. (config[i] and table.concat(config[i], ", ") or ""))
   end
 
-  local sum = "Template Name: " .. name .. "\n\n" .. table.concat(groups,"\n")
+  local sum = "Layout Name: " .. name .. "\n\n" .. table.concat(groups,"\n")
   return sum
 end
 
@@ -135,9 +135,12 @@ function TextToBasicRaidConfig(text)
 
   local lower_text = string.lower(text)
 
-  local s,e,template_name = string.find(lower_text,"template%s*name%s*:%s*([%w _]+)\n*")
+  local s,e,template_name = string.find(lower_text,"layout%s*name%s*:%s*([%w _]+)\n*")
   if not s then return end
-  print("tn "..template_name)
+  -- grab the capitalized version
+  local _,_,template_name = string.find(string.sub(text,s,e),":%s*([%w _]+)\n*")
+  -- print("tn "..template_name)
+
   local rest = string.sub(lower_text,e)
   -- print(rest)
   local config = {}
@@ -175,7 +178,7 @@ end
 local function FindMisplacedMemberInSubgroup(subgroup, config, desiredConfig, excludeName)
   for name, group in pairs(config) do
     if group == subgroup and name ~= excludeName and desiredConfig[name] ~= subgroup then
-      print(name)
+      -- print(name)
       return name
     end
   end
@@ -183,19 +186,21 @@ local function FindMisplacedMemberInSubgroup(subgroup, config, desiredConfig, ex
 end
 
 -- Function to move a member to their desired subgroup
-local function MoveMember(name, desiredSubgroup, currentConfig, raidUnits, subgroupCount, desiredConfig)
+local function MoveMemberSafely(name, desiredSubgroup, currentConfig, raidUnits, subgroupCount, desiredConfig, visited)
   local currentSubgroup = currentConfig[name]
 
   if currentSubgroup == desiredSubgroup then
-    print(name.."is in desired group")
     return true
   end
 
+  -- Prevent infinite loops by tracking visited members
+  if visited[name] then
+    return false
+  end
+  visited[name] = true
+
   -- If the desired subgroup is not full, move directly
   if subgroupCount[desiredSubgroup] < 5 then
-    local a = raidUnits[name]
-    local sg = desiredSubgroup
-
     SetRaidSubgroup(raidUnits[name], desiredSubgroup)
     subgroupCount[currentSubgroup] = subgroupCount[currentSubgroup] - 1
     subgroupCount[desiredSubgroup] = subgroupCount[desiredSubgroup] + 1
@@ -204,40 +209,60 @@ local function MoveMember(name, desiredSubgroup, currentConfig, raidUnits, subgr
   else
     -- Find a member in the desired subgroup to use as a temporary placeholder
     local tempName = FindMisplacedMemberInSubgroup(desiredSubgroup, currentConfig, desiredConfig, name)
+    
+    if not tempName then
+      -- If no misplaced member is found, try to force a swap
+      for candidateName, group in pairs(currentConfig) do
+        if group == desiredSubgroup then
+          tempName = candidateName
+          break
+        end
+      end
+    end
+
+    -- Proceed with the swap if a member was found
     if tempName then
-      local a = raidUnits[name]
-      local b = raidUnits[tempName]
-      -- Move the temporary member to the current subgroup
-      currentConfig[name], currentConfig[tempName] = currentConfig[tempName], currentConfig[name]
       SwapRaidSubgroup(raidUnits[name], raidUnits[tempName])
-      return MoveMember(tempName, desiredConfig[tempName], currentConfig, raidUnits, subgroupCount, desiredConfig)
+      currentConfig[name], currentConfig[tempName] = currentConfig[tempName], currentConfig[name]
+      return MoveMemberSafely(tempName, desiredConfig[tempName], currentConfig, raidUnits, subgroupCount, desiredConfig, visited)
     end
   end
+  
   return false
 end
 
--- Main function to configure the raid
+-- check raid for names, kick dupers
+function RemoveDupes()
+  local t = {}
+  for i=1,GetNumRaidMembers() do
+    local name = GetRaidRosterInfo(i)
+    if t[name] then
+      UninviteByName(name)
+    else
+      t[name] = true
+    end
+  end
+end
+
 local function ConfigureRaid(desiredConfig)
   local currentConfig, raidUnits = GetCurrentRaidConfiguration()
   local subgroupCount = {}
 
-  local c = 0
-  for k,_ in pairs(currentConfig) do
-    c = c + 1
+  if DEBUG then
+    RemoveDupes()
   end
-  print(c)
 
   -- copy desired config, prune missing names, add new names
   local tempDes = {}
-  for name,_ in pairs(desiredConfig) do
-    if currentConfig[name] then
-      tempDes[name] = desiredConfig[name]
-    end
+  for name, _ in pairs(desiredConfig) do
+      if currentConfig[name] then
+          tempDes[name] = desiredConfig[name]
+      end
   end
-  for name,_ in pairs(currentConfig) do
-    if not desiredConfig[name] then
-      tempDes[name] = currentConfig[name]
-    end
+  for name, _ in pairs(currentConfig) do
+      if not desiredConfig[name] then
+          tempDes[name] = currentConfig[name]
+      end
   end
 
   -- Initialize subgroup counts
@@ -247,11 +272,23 @@ local function ConfigureRaid(desiredConfig)
 
   -- Count the number of members in each current subgroup
   for _, subgroup in pairs(currentConfig) do
-    subgroupCount[subgroup] = subgroupCount[subgroup] + 1
+      subgroupCount[subgroup] = subgroupCount[subgroup] + 1
   end
 
+  -- Process each member in the desired configuration
+  local queue = {}
+  local queue_size = 0
   for name, desiredSubgroup in pairs(tempDes) do
-    MoveMember(name, desiredSubgroup, currentConfig, raidUnits, subgroupCount, tempDes)
+      table.insert(queue, {name = name, desiredSubgroup = desiredSubgroup})
+      queue_size = queue_size + 1
+  end
+
+    -- Process each member in the desired configuration with cycle detection
+    for name, desiredSubgroup in pairs(tempDes) do
+      local visited = {}
+      if not MoveMemberSafely(name, desiredSubgroup, currentConfig, raidUnits, subgroupCount, tempDes, visited) then
+          ers_print("Failed to move " .. name .. " to the desired subgroup. Please screenshot the current raid and the raid layout.")
+      end
   end
 end
 
@@ -293,6 +330,18 @@ local function CreateRaidButtons()
   SaveRaidButton:SetScript("OnClick", function()
       ERS_SaveRaid()
   end)
+  -- Add a script to handle showing the tooltip
+  SaveRaidButton:SetScript("OnEnter", function()
+    GameTooltip:SetOwner(this, "ANCHOR_RIGHT")
+    GameTooltip:SetText("Quick-Save Current Raid", 1, 1, 0)  -- Tooltip title
+    GameTooltip:AddLine("Save the current raid to the quick-save slot", 1, 1, 1, true)  -- Tooltip description
+    GameTooltip:Show()
+  end)
+
+  -- Add a script to handle hiding the tooltip
+  SaveRaidButton:SetScript("OnLeave", function()
+    GameTooltip:Hide()
+  end)
 
   -- Create the Restore Raid button
   local RestoreRaidButton = CreateFrame("Button", "RestoreRaidButton", RaidFrame, "UIPanelButtonTemplate")
@@ -303,6 +352,18 @@ local function CreateRaidButtons()
   RestoreRaidButton:SetScript("OnClick", function()
       ERS_RestoreRaid()
   end)
+  -- Add a script to handle showing the tooltip
+  RestoreRaidButton:SetScript("OnEnter", function()
+    GameTooltip:SetOwner(this, "ANCHOR_RIGHT")
+    GameTooltip:SetText("Quick-Load Raid", 1, 1, 0)  -- Tooltip title
+    GameTooltip:AddLine("Load the last quick-saved raid", 1, 1, 1, true)  -- Tooltip description
+    GameTooltip:Show()
+  end)
+
+  -- Add a script to handle hiding the tooltip
+  RestoreRaidButton:SetScript("OnLeave", function()
+    GameTooltip:Hide()
+  end)
 
   local InfoButton = getglobal("RaidFrameRaidInfoButton")
   InfoButton:SetText("Info")
@@ -310,134 +371,242 @@ local function CreateRaidButtons()
   InfoButton.orig_width = InfoButton:GetWidth()
   InfoButton:SetWidth(35) -- Width, Height
 
-  local ConfigFrame = CreateFrame("Frame","ESRConfigFrame",RaidFrame)
-  ConfigFrame:SetPoint("TOPLEFT", RaidFrame,"TOPRIGHT", 0, 0)
-
-  local EditBox = CreateFrame("EditBox","ERSEditBox",ConfigFrame)
-  EditBox:SetMultiLine(true)
-  EditBox:SetAutoFocus(false) -- Prevent the box from auto-focusing
-  EditBox:SetFontObject(GameFontNormal)
-  EditBox:SetWidth(380)
-  EditBox:SetHeight(140) -- Set a large height to enable scrolling
-  EditBox:SetText("Raid Layout")
-  EditBox:SetPoint("LEFT", RaidFrame,"RIGHT", 0, 0)
-
-  -- Add a background to the frame
-  local bg = EditBox:CreateTexture(nil, "BACKGROUND")
-  bg:SetPoint("LEFT", EditBox,"LEFT", 0, 0)
-  bg:SetWidth(EditBox:GetWidth())
-  bg:SetHeight(EditBox:GetHeight())
-  bg:SetTexture(0, 0, 0, 0.5) -- Black background with some transparency
-
-  EditBox:SetScript("OnEscapePressed", function ()
-    EditBox:ClearFocus()
+  local f = InfoButton:GetScript("OnClick")
+  InfoButton:SetScript("OnClick", function (a1,a2,a3,a4,a5,a6,a7,a8,a9)
+    f(a1,a2,a3,a4,a5,a6,a7,a8,a9)
+    if ESRConfigFrame:IsShown() then ESRConfigFrameButton:Click() end
   end)
 
-  local MyDropdown = CreateFrame("Frame", "MyDropdownMenu", ConfigFrame, "UIDropDownMenuTemplate")
-  MyDropdown:SetPoint("CENTER", UIParent, "CENTER")
-  MyDropdown:SetPoint("TOPLEFT", RaidFrame,"TOPRIGHT", 0, 0)
-  MyDropdown:SetWidth(150)
-  UIDropDownMenu_SetText("Select an option", MyDropdown)
+  local function CreateConfigArea()
 
-  local function MyDropdown_OnClick()
-    UIDropDownMenu_SetSelectedValue(MyDropdown, this.value)
-    print("Selected option: " .. this.value)
-  end
+    local ConfigFrame = CreateFrame("Frame","ESRConfigFrame",RaidFrame)
 
-  local function MyDropdown_Initialize(level)
+    -- Create the button frame
+    local rightArrowButton = CreateFrame("Button", "ESRConfigFrameButton", RaidFrame, "UIPanelButtonTemplate")
+    rightArrowButton:SetWidth(24)  -- Width, Height
+    rightArrowButton:SetHeight(24)  -- Width, Height
+    rightArrowButton:SetPoint("TOPLEFT", RaidFrame, "TOPRIGHT",-30, -10)
+    -- Add a script to handle showing the tooltip
+    rightArrowButton:SetScript("OnEnter", function()
+      GameTooltip:SetOwner(this, "ANCHOR_RIGHT")
+      -- GameTooltip:SetText("Quick-Load Raid", 1, 1, 0)  -- Tooltip title
+      GameTooltip:AddLine("Show/Hide the raid Layout Editor", 1, 1, 1, true)  -- Tooltip description
+      GameTooltip:Show()
+    end)
 
-    local info = {}
-    info.text = "Current Saved Raid"
-    info.func = function ()
-      if EasyRaidSaverDB.saved_raid then
-        local config = MakeRaidConfiguration(EasyRaidSaverDB.saved_raid)
-        EditBox:SetText(StoredRaidConfigToTextRaw("last_saved_raid", config))
-        UIDropDownMenu_SetSelectedName(MyDropdown, this:GetText())
+    -- Add a script to handle hiding the tooltip
+    rightArrowButton:SetScript("OnLeave", function()
+      GameTooltip:Hide()
+    end)
+
+    -- Create the arrow texture
+    local arrowTextureUp = rightArrowButton:CreateTexture(nil, "ARTWORK")
+    arrowTextureUp:SetTexture("Interface\\Buttons\\UI-SpellbookIcon-NextPage-Up")  -- Path to the right arrow texture
+    arrowTextureUp:SetAllPoints(rightArrowButton)  -- Make the texture fill the entire button
+
+    local arrowTextureDown = rightArrowButton:CreateTexture(nil, "ARTWORK")
+    arrowTextureDown:SetTexture("Interface\\Buttons\\UI-SpellbookIcon-NextPage-Down")  -- Path to the right arrow texture
+    arrowTextureDown:SetAllPoints(rightArrowButton)  -- Make the texture fill the entire button
+
+    -- Set the normal and pushed textures for the button
+    rightArrowButton:SetNormalTexture(arrowTextureUp)
+    rightArrowButton:SetPushedTexture(arrowTextureDown)
+
+    -- Add a script to handle the button click
+    rightArrowButton:SetScript("OnClick", function()
+      if ConfigFrame:IsShown() then
+        ConfigFrame:Hide()
+      else
+        ConfigFrame:Show()
       end
-    end
-    UIDropDownMenu_AddButton(info, level)
+    end)
 
-    for k,_ in pairs(EasyRaidSaverDB.templates) do
-      local name = k
-      local info = {}
-      info.text = name
-      info.func = function ()
-        local conf = StoredRaidConfigToText(name)
-        if conf then
-          EditBox:SetText(conf)
-          UIDropDownMenu_SetSelectedName(MyDropdown, this:GetText())
+    -- Show the button
+    rightArrowButton:Show()
+    ConfigFrame:SetPoint("TOPLEFT", rightArrowButton,"TOPRIGHT", 0, 0)
+
+      
+    local EditBox = CreateFrame("EditBox","ERSEditBox",ConfigFrame)
+    EditBox:SetMultiLine(true)
+    EditBox:SetAutoFocus(false) -- Prevent the box from auto-focusing
+    EditBox:SetFontObject(GameFontNormal)
+    EditBox:SetWidth(380)
+    EditBox:SetHeight(140) -- Set a large height to enable scrolling
+    EditBox:SetText("Raid Layout")
+    EditBox:SetPoint("LEFT", RaidFrame,"RIGHT", 0, 150)
+    EditBox:Hide()
+
+    -- Add a background to the frame
+    local bg = EditBox:CreateTexture(nil, "BACKGROUND")
+    bg:SetPoint("LEFT", EditBox,"LEFT", 0, 0)
+    bg:SetWidth(EditBox:GetWidth())
+    bg:SetHeight(EditBox:GetHeight())
+    bg:SetTexture(0, 0, 0, 0.7) -- Black background with some transparency
+
+    EditBox:SetScript("OnEscapePressed", function ()
+      EditBox:ClearFocus()
+    end)
+
+    local MyDropdown = CreateFrame("Frame", "MyDropdownMenu", ConfigFrame, "UIDropDownMenuTemplate")
+    -- MyDropdown:SetPoint("CENTER", UIParent, "CENTER")
+    MyDropdown:SetPoint("TOPLEFT", RaidFrame,"TOPRIGHT", -17, -7)
+    -- MyDropdown:SetWidth(150)
+    UIDropDownMenu_SetText("Select a Layout", MyDropdown)
+    UIDropDownMenu_SetWidth(170,MyDropdown)
+
+    MyDropdown:SetScript("OnShow", function ()
+      if UIDropDownMenu_GetSelectedID(MyDropdown) then
+        EditBox:Show()
+      end
+    end)
+
+    -- local function MyDropdown_OnClick()
+    --   UIDropDownMenu_SetSelectedValue(MyDropdown, this.value)
+    --   print("Selected option: " .. this.value)
+    -- end
+
+    local function MyDropdown_Initialize(level)
+
+      for k,_ in pairs(EasyRaidSaverDB.templates) do
+        local name = k
+        local info = {}
+        info.text = name
+        info.func = function ()
+          local conf = StoredRaidConfigToText(name)
+          if conf then
+            EditBox:SetText(conf)
+            UIDropDownMenu_SetSelectedName(MyDropdown, this:GetText())
+            EditBox:Show()
+          end
         end
+        UIDropDownMenu_AddButton(info, level)
+      end
+
+      local info = {}
+      info.text = "Current Quick-Saved Raid"
+      info.textR = 1 -- yellow
+      info.textG = 1 -- yellow
+      info.textB = 0 -- yellow
+      info.func = function ()
+        if EasyRaidSaverDB.saved_raid then
+          local config = MakeRaidConfiguration(EasyRaidSaverDB.saved_raid)
+          EditBox:SetText(StoredRaidConfigToTextRaw("last_raid_quicksave", config))
+          UIDropDownMenu_SetSelectedName(MyDropdown, this:GetText())
+          EditBox:Show()
+        end
+      end
+      UIDropDownMenu_AddButton(info, level)
+
+      local info = {}
+      info.text = "Shaman For Melee"
+      info.textR = 0.14 -- yellow
+      info.textG = 0.35 -- yellow
+      info.textB = 1.0 -- yellow
+      info.func = function ()
+        -- organize shamans and melee here
+        print("this layout template doesn't do anything yet")
+      end
+      UIDropDownMenu_AddButton(info, level)
+
+      local info = {}
+      info.text = "New Layout"
+      -- info.value = "New Template"
+      info.textR = 1 -- yellow
+      info.textG = 1 -- yellow
+      info.textB = 0 -- yellow
+      info.func = function ()
+        local config = MakeRaidConfiguration(GetCurrentRaidConfiguration())
+        EditBox:SetText(StoredRaidConfigToTextRaw("new layout", config))
+        UIDropDownMenu_SetSelectedName(MyDropdown, this:GetText())
+        EditBox:Show()
       end
       UIDropDownMenu_AddButton(info, level)
     end
 
-    local info = {}
-    info.text = "New Template"
-    info.value = "New Template"
-    info.func = function ()
-      local config = MakeRaidConfiguration(GetCurrentRaidConfiguration())
-      EditBox:SetText(StoredRaidConfigToTextRaw("new template", config))
-      UIDropDownMenu_SetSelectedName(MyDropdown, this:GetText())
-    end
-    UIDropDownMenu_AddButton(info, level)
+    UIDropDownMenu_Initialize(MyDropdown, MyDropdown_Initialize)
+    -- UIDropDownMenu_SetSelectedValue(MyDropdown,"New Template")
+
+    -- Create the Save Raid button
+    local SaveTemplateButton = CreateFrame("Button", "SaveTemplateButton", ConfigFrame, "UIPanelButtonTemplate")
+    SaveTemplateButton:SetWidth(35) -- Width, Height
+    SaveTemplateButton:SetHeight(22) -- Width, Height
+    SaveTemplateButton:SetPoint("LEFT", MyDropdown, "RIGHT", -10, 3) -- Position relative to RaidFrame
+    SaveTemplateButton:SetText("Save")
+    SaveTemplateButton:SetScript("OnClick", function()
+      local conf,name = TextToBasicRaidConfig(EditBox:GetText())
+
+      if conf then
+        StoreRaidConfiguration(name, conf)
+        UIDropDownMenu_Initialize(MyDropdown, MyDropdown_Initialize)
+        UIDropDownMenu_SetSelectedName(MyDropdown, name)
+        ers_print("Saving layout: " .. name)
+      end
+    end)
+
+    -- Create the Restore Raid button
+    local DeleteTemplateButton = CreateFrame("Button", "DeleteTemplateButton", ConfigFrame, "UIPanelButtonTemplate")
+    DeleteTemplateButton:SetWidth(35) -- Width, Height
+    DeleteTemplateButton:SetHeight(22) -- Width, Height
+    DeleteTemplateButton:SetPoint("BOTTOMLEFT", SaveTemplateButton, "TOPLEFT", 0, 0) -- Position relative to RaidFrame
+    DeleteTemplateButton:SetText("Delete")
+    DeleteTemplateButton:SetScript("OnClick", function()
+      local name = UIDropDownMenu_GetSelectedName(MyDropdown)
+      local ix = UIDropDownMenu_GetSelectedID(MyDropdown)
+      if EasyRaidSaverDB.templates[name] then
+        EasyRaidSaverDB.templates[name] = nil
+        ers_print("Deleted layout: " .. name)
+        UIDropDownMenu_Initialize(MyDropdown, MyDropdown_Initialize)
+        -- UIDropDownMenu_SetSelectedID(MyDropdown,ix-1)
+      end
+    end)
+    -- Add a script to handle showing the tooltip
+    DeleteTemplateButton:SetScript("OnEnter", function()
+      GameTooltip:SetOwner(this, "ANCHOR_RIGHT")
+      GameTooltip:SetText("Delete Current Layout", 1, 1, 0)  -- Tooltip title
+      GameTooltip:AddLine("This operation will not ask for confirmation", 1, 1, 1, true)  -- Tooltip description
+      GameTooltip:Show()
+      -- TODO: Make it ask for confirmation
+    end)
+
+    -- Add a script to handle hiding the tooltip
+    DeleteTemplateButton:SetScript("OnLeave", function()
+      GameTooltip:Hide()
+    end)
+
+    -- Create the Restore Raid button
+    local ApplyTemplateButton = CreateFrame("Button", "ApplyTemplateButton", ConfigFrame, "UIPanelButtonTemplate")
+    ApplyTemplateButton:SetWidth(42) -- Width, Height
+    ApplyTemplateButton:SetHeight(22) -- Width, Height
+    ApplyTemplateButton:SetPoint("LEFT", SaveTemplateButton, "RIGHT", 0, 0) -- Position relative to RaidFrame
+    ApplyTemplateButton:SetText("Apply")
+    ApplyTemplateButton:SetScript("OnClick", function()
+      local name = UIDropDownMenu_GetSelectedName(MyDropdown)
+      if EasyRaidSaverDB.templates[name] then
+        local simple = ToSimpleConfig(EasyRaidSaverDB.templates[name])
+        ConfigureRaid(simple)
+        ers_print("Applying layout: " .. name)
+        if DEBUG then DidRaidMatch(simple,GetCurrentRaidConfiguration()) end
+      end
+    end)
+    -- Add a script to handle showing the tooltip
+    ApplyTemplateButton:SetScript("OnEnter", function()
+      GameTooltip:SetOwner(this, "ANCHOR_RIGHT")
+      GameTooltip:SetText("Apply Layout", 1, 1, 0)  -- Tooltip title
+      GameTooltip:AddLine("Apply the current Layout, re-organising the raid to match", 1, 1, 1, true)  -- Tooltip description
+      GameTooltip:Show()
+    end)
+
+    -- Add a script to handle hiding the tooltip
+    ApplyTemplateButton:SetScript("OnLeave", function()
+      GameTooltip:Hide()
+    end)
+
   end
-
-  UIDropDownMenu_Initialize(MyDropdown, MyDropdown_Initialize)
-  -- UIDropDownMenu_SetSelectedValue(MyDropdown,"New Template")
-
-  -- Create the Save Raid button
-  local SaveTemplateButton = CreateFrame("Button", "SaveTemplateButton", ConfigFrame, "UIPanelButtonTemplate")
-  SaveTemplateButton:SetWidth(35) -- Width, Height
-  SaveTemplateButton:SetHeight(22) -- Width, Height
-  SaveTemplateButton:SetPoint("LEFT", MyDropdown, "RIGHT", 0, 0) -- Position relative to RaidFrame
-  SaveTemplateButton:SetText("Save")
-  SaveTemplateButton:SetScript("OnClick", function()
-    local conf,name = TextToBasicRaidConfig(EditBox:GetText())
-
-    if conf then
-      StoreRaidConfiguration(name, conf)
-      UIDropDownMenu_Initialize(MyDropdown, MyDropdown_Initialize)
-      UIDropDownMenu_SetSelectedName(MyDropdown, name)
-      ers_print("Saving layout: " .. name)
-    end
-  end)
-
-  -- Create the Restore Raid button
-  local DeleteTemplateButton = CreateFrame("Button", "DeleteTemplateButton", ConfigFrame, "UIPanelButtonTemplate")
-  DeleteTemplateButton:SetWidth(35) -- Width, Height
-  DeleteTemplateButton:SetHeight(22) -- Width, Height
-  DeleteTemplateButton:SetPoint("LEFT", SaveTemplateButton, "RIGHT", 0, 0) -- Position relative to RaidFrame
-  DeleteTemplateButton:SetText("Delete")
-  DeleteTemplateButton:SetScript("OnClick", function()
-    local name = UIDropDownMenu_GetSelectedName(MyDropdown)
-    local ix = UIDropDownMenu_GetSelectedID(MyDropdown)
-    if EasyRaidSaverDB.templates[name] then
-      EasyRaidSaverDB.templates[name] = nil
-      ers_print("Deleted layout: " .. name)
-      UIDropDownMenu_Initialize(MyDropdown, MyDropdown_Initialize)
-      UIDropDownMenu_SetSelectedID(MyDropdown,ix-1)
-    end
-  end)
-
-  -- Create the Restore Raid button
-  local ApplyTemplateButton = CreateFrame("Button", "ApplyTemplateButton", ConfigFrame, "UIPanelButtonTemplate")
-  ApplyTemplateButton:SetWidth(35) -- Width, Height
-  ApplyTemplateButton:SetHeight(22) -- Width, Height
-  ApplyTemplateButton:SetPoint("LEFT", DeleteTemplateButton, "RIGHT", 0, 0) -- Position relative to RaidFrame
-  ApplyTemplateButton:SetText("Apply")
-  ApplyTemplateButton:SetScript("OnClick", function()
-    local name = UIDropDownMenu_GetSelectedName(MyDropdown)
-    if EasyRaidSaverDB.templates[name] then
-      local simple = ToSimpleConfig(EasyRaidSaverDB.templates[name])
-      -- for n,i in pairs(simple) do
-      --   print(n .. " _ " .. i)
-      -- end
-      ConfigureRaid(simple)
-      ers_print("Applying layout: " .. name)
-      DidRaidMatch(simple,GetCurrentRaidConfiguration())
-    end
-  end)
+  CreateConfigArea()
 end
+
+-- TODO change taunt resist report
+-- make masterloot reminder more selective
 
 local function UpdateInfoButton()
   if GetNumRaidMembers() > 0 then
@@ -456,19 +625,23 @@ local function UpdateButtonStates()
   if GetNumRaidMembers() > 0 then
     SaveRaidButton:Show()
     RestoreRaidButton:Show()
+    if IsRaidOfficer() then
+      ApplyTemplateButton:Enable()
+    else
+      ApplyTemplateButton:Disable()
+    end
 
     ESRConfigFrame:Show()
 
     if EasyRaidSaverDB.saved_raid and IsRaidOfficer() then
       RestoreRaidButton:Enable()
     else
-      -- print(EasyRaidSaverDB.saved_raid and "yes1" or "no1")
-      -- print(IsRaidOfficer() and "yes2" or "no2")
       RestoreRaidButton:Disable()
     end
   else
     SaveRaidButton:Hide()
     RestoreRaidButton:Hide()
+    ApplyTemplateButton:Disable()
 
     ESRConfigFrame:Hide()
   end
@@ -477,46 +650,17 @@ end
 
 -- Function to save the raid setup
 function ERS_SaveRaid()
-  -- Your code to save the raid
-  ers_print("Saving current raid layout.")
+  ers_print("Quick-saving current raid layout.")
   saved_raid = GetCurrentRaidConfiguration()
   EasyRaidSaverDB.saved_raid = saved_raid
-  -- StoreRaidConfiguration("current", saved_raid)
-  -- for i,k in pairs(saved_raid) do
-    -- print(i .. " " .. k)
-  -- end
+
   UpdateButtonStates()
 end
 
-local now_empty = true
--- Function to restore the raid setup
 function ERS_RestoreRaid()
-  -- Your code to restore the raid
-  ers_print("Restoring saved raid layout.")
+  ers_print("Quick-loading saved raid layout.")
   if EasyRaidSaverDB.saved_raid then
-    -- shuffle_queue = {}
-    -- ConfigureRaid(saved_raid)
-    -- for i=1,3 do
-    -- now_empty = false
     ConfigureRaid(EasyRaidSaverDB.saved_raid)
-    -- ConfigureRaid(saved_raid)
-    -- end
-    -- print("configed")
-    -- DoNextQueueItem()
-    -- print("item one go")
-  end
-end
-
-function DoNextQueueItem()
-  -- if not next(shuffle_queue) then return end
-  local step = table.remove(shuffle_queue)
-  if step then
-    step()
-    print("another step")
-  -- elseif not now_empty and saved_raid then
-  --   now_empty = true
-  --   ConfigureRaid(saved_raid)
-  --   print("reconfigure")
   end
 end
 
@@ -531,6 +675,11 @@ frame:RegisterEvent("RAID_ROSTER_UPDATE")
 frame:RegisterEvent("PLAYER_ENTERING_WORLD")
 frame:SetScript("OnEvent", function ()
   if event == "ADDON_LOADED" and arg1 == "EasyRaidSaver" then
+
+    EasyRaidSaverDB = EasyRaidSaverDB or {}
+    EasyRaidSaverDB.settings = EasyRaidSaverDB.settings or {}
+    EasyRaidSaverDB.templates = EasyRaidSaverDB.templates or {}
+
     CreateRaidButtons()
 
     local rgfu = RaidGroupFrame_Update
@@ -545,10 +694,6 @@ frame:SetScript("OnEvent", function ()
       if rgonshow then rgonshow() end
       UpdateButtonStates()
     end)
-
-    EasyRaidSaverDB = EasyRaidSaverDB or {}
-    EasyRaidSaverDB.settings = EasyRaidSaverDB.settings or {}
-    EasyRaidSaverDB.templates = EasyRaidSaverDB.templates or {}
 
     UpdateButtonStates()
   elseif event == "RAID_ROSTER_UPDATE" then
