@@ -53,6 +53,8 @@ end
 
 local saved_raid = nil
 shuffle_queue = {}
+local EasyRaidSaver = CreateFrame("Frame","EasyRaidSaver")
+local active_template = nil
 
 ------------------------------
 -- Raid Functions
@@ -87,20 +89,16 @@ function StoreRaidConfiguration(name,config)
   EasyRaidSaverDB.templates[name] = r
 end
 
--- I need a dropdown to pick a config, I want a toggle box for live update, I want tooltips explaining things at cursor
--- can use "new template" in dropdown to make new entries
--- button for opening text editor
 -- option to set assistants
 -- option to auto-shift spriests around
 -- option to autoswap dead melee out of shaman groups or swap a live shaman into dead spot
--- postal option to spit out items being sent and amount
 -- rabuffs option to show item totals for consumes
 -- fr trinket
 -- fr gun
 -- default templates to order people by class to make optimal groups automatically
--- make mc automarks
+-- fuller ui allowing you to specify who is in raid by text but then edit it by dragging
 
-function StoredRaidConfigToTextRaw(name, temp)
+local function StoredRaidConfigToTextRaw(name, temp)
   local config = temp
   local groups = {}
 
@@ -112,13 +110,13 @@ function StoredRaidConfigToTextRaw(name, temp)
   return sum
 end
 
-function StoredRaidConfigToText(name)
+local function StoredRaidConfigToText(name)
   local config = EasyRaidSaverDB.templates[name]
   if not config then return end
   return StoredRaidConfigToTextRaw(name, config)
 end
 
-function ToSimpleConfig(config)
+local function ToSimpleConfig(config)
   local temp = {}
   for i,group in pairs(config) do
     for _,member in pairs(group) do
@@ -130,7 +128,7 @@ function ToSimpleConfig(config)
   return temp
 end
 
-function TextToBasicRaidConfig(text)
+local function TextToBasicRaidConfig(text)
   if not text then return end
 
   local lower_text = string.lower(text)
@@ -161,12 +159,6 @@ function TextToBasicRaidConfig(text)
   return config,template_name
 end
 
-test_line = "tEmplate Name:fOofer\nGroup2:wor\nGroup 5: wICK,WHACK"
-function Runtest_line()
-  TextToStoredRaidConfig(test_line)
-end
-
-
 function RandomizeRaid()
   local max = GetNumRaidMembers()
   for i=1,max do
@@ -183,6 +175,19 @@ local function FindMisplacedMemberInSubgroup(subgroup, config, desiredConfig, ex
     end
   end
   return nil
+end
+
+-- check raid for names, kick dupers
+function RemoveDupes()
+  local t = {}
+  for i=1,GetNumRaidMembers() do
+    local name = GetRaidRosterInfo(i)
+    if t[name] then
+      UninviteByName(name)
+    else
+      t[name] = true
+    end
+  end
 end
 
 -- Function to move a member to their desired subgroup
@@ -229,19 +234,6 @@ local function MoveMemberSafely(name, desiredSubgroup, currentConfig, raidUnits,
   end
   
   return false
-end
-
--- check raid for names, kick dupers
-function RemoveDupes()
-  local t = {}
-  for i=1,GetNumRaidMembers() do
-    local name = GetRaidRosterInfo(i)
-    if t[name] then
-      UninviteByName(name)
-    else
-      t[name] = true
-    end
-  end
 end
 
 local function ConfigureRaid(desiredConfig)
@@ -293,7 +285,7 @@ local function ConfigureRaid(desiredConfig)
 end
 
 
-function DidRaidMatch(first,second)
+local function DidRaidMatch(first,second)
   for name,subgroup in pairs(first) do
     -- print("f "..first[name] .. " ".. name)
     -- print("s "..second[name].. " ".. name)
@@ -309,6 +301,16 @@ end
 ------------------------------
 -- UI
 ------------------------------
+
+local function SetCheckboxGreyed(checkbox, greyed)
+  if greyed then
+    -- Make the checkbox appear greyed out
+    checkbox:GetCheckedTexture():SetVertexColor(0.3, 0.3, 0.3)
+  else
+    -- Restore the checkbox's normal colors
+    checkbox:GetCheckedTexture():SetVertexColor(1, 1, 1)
+  end
+end
 
 -- Define a function to create the buttons
 local function CreateRaidButtons()
@@ -447,10 +449,22 @@ local function CreateRaidButtons()
       EditBox:ClearFocus()
     end)
 
+    -- OnTextChanged
+    -- EditBox:SetScript("OnChar", function ()
+    --   local char = arg1
+    --   if char == "%" then char = "%%" end
+    --   local allowed = "[A-Za-z _:0-9,]"
+    --   if not string.find(char,allowed) then
+    --     -- remove last entered char
+    --     local text = this:GetText()
+    --     -- local len = string.len(text)
+    --     -- this:SetText(string.sub(text,1,len-1))
+    --     this:SetText(string.gsub(text,"(["..char.."])",""))
+    --   end
+    -- end)
+
     local MyDropdown = CreateFrame("Frame", "MyDropdownMenu", ConfigFrame, "UIDropDownMenuTemplate")
-    -- MyDropdown:SetPoint("CENTER", UIParent, "CENTER")
     MyDropdown:SetPoint("TOPLEFT", RaidFrame,"TOPRIGHT", -17, -7)
-    -- MyDropdown:SetWidth(150)
     UIDropDownMenu_SetText("Select a Layout", MyDropdown)
     UIDropDownMenu_SetWidth(170,MyDropdown)
 
@@ -458,6 +472,18 @@ local function CreateRaidButtons()
       if UIDropDownMenu_GetSelectedID(MyDropdown) then
         EditBox:Show()
       end
+    end)
+
+    getglobal("MyDropdownMenuButton"):SetScript("OnEnter", function()
+      GameTooltip:SetOwner(this, "ANCHOR_RIGHT")
+      GameTooltip:SetText("Layout Selection", 1, 1, 0)  -- Tooltip title
+      GameTooltip:AddLine("White: player-made templates", 1, 1, 1, true)  -- Tooltip description
+      GameTooltip:AddLine("Green: current Applied template", 1, 1, 1, true)  -- Tooltip description
+      GameTooltip:Show()
+    end)
+
+    getglobal("MyDropdownMenuButton"):SetScript("OnLeave", function()
+      GameTooltip:Hide()
     end)
 
     -- local function MyDropdown_OnClick()
@@ -471,14 +497,21 @@ local function CreateRaidButtons()
         local name = k
         local info = {}
         info.text = name
+        if EasyRaidSaverDB.settings.active_template == name then
+          info.textR = 0.1
+          info.textG = 0.8
+          info.textB = 0.1
+        end
         info.func = function ()
           local conf = StoredRaidConfigToText(name)
           if conf then
             EditBox:SetText(conf)
             UIDropDownMenu_SetSelectedName(MyDropdown, this:GetText())
+            EasyRaidSaverDB.settings.last_template_selection = this:GetText()
             EditBox:Show()
           end
         end
+        -- info.hasArrow = (UIDropDownMenu_GetSelectedName(MyDropdown) == info.text) and 1 or nil
         UIDropDownMenu_AddButton(info, level)
       end
 
@@ -521,10 +554,14 @@ local function CreateRaidButtons()
         EditBox:Show()
       end
       UIDropDownMenu_AddButton(info, level)
+      -- EasyRaidSaverDB.settings.last_templte = UIDropDownMenu_GetSelectedValue(MyDropdown)
     end
 
     UIDropDownMenu_Initialize(MyDropdown, MyDropdown_Initialize)
-    -- UIDropDownMenu_SetSelectedValue(MyDropdown,"New Template")
+    if EasyRaidSaverDB.settings.last_template_selection then
+      UIDropDownMenu_SetSelectedName(MyDropdown, EasyRaidSaverDB.settings.last_template_selection)
+      -- ^ how do I run this func
+    end
 
     -- Create the Save Raid button
     local SaveTemplateButton = CreateFrame("Button", "SaveTemplateButton", ConfigFrame, "UIPanelButtonTemplate")
@@ -585,7 +622,12 @@ local function CreateRaidButtons()
         local simple = ToSimpleConfig(EasyRaidSaverDB.templates[name])
         ConfigureRaid(simple)
         ers_print("Applying layout: " .. name)
-        if DEBUG then DidRaidMatch(simple,GetCurrentRaidConfiguration()) end
+        if DEBUG then
+          RemoveDupes()
+          DidRaidMatch(simple,GetCurrentRaidConfiguration()) end
+        end
+        EasyRaidSaverDB.settings.active_template = name
+        SetCheckboxGreyed(ERSLiveToggle,not EasyRaidSaverDB.settings.active_template)
       end
     end)
     -- Add a script to handle showing the tooltip
@@ -598,6 +640,34 @@ local function CreateRaidButtons()
 
     -- Add a script to handle hiding the tooltip
     ApplyTemplateButton:SetScript("OnLeave", function()
+      GameTooltip:Hide()
+    end)
+
+    -- highlight the last template set to _active_
+
+    local LiveToggle = CreateFrame("CheckButton", "ERSLiveToggle", ConfigFrame, "UICheckButtonTemplate")
+    LiveToggle:SetWidth(24)
+    LiveToggle:SetHeight(24)
+    LiveToggle:SetPoint("LEFT", ApplyTemplateButton, "RIGHT", 0, 0)
+    -- LiveToggle.tooltipText = "Toggle Live Apply"
+    -- LiveToggle.tooltipRequirement = "Apply the current layout as people join the raid"
+    LiveToggle:SetChecked(EasyRaidSaverDB.settings.live_checked)
+
+    LiveToggle:SetScript("OnClick", function ()
+      EasyRaidSaverDB.settings.live_checked = this:GetChecked() and true or false
+      SetCheckboxGreyed(this,not EasyRaidSaverDB.settings.active_template)
+    end)
+
+    -- Add a script to handle showing the tooltip
+    LiveToggle:SetScript("OnEnter", function()
+      GameTooltip:SetOwner(this, "ANCHOR_RIGHT")
+      GameTooltip:SetText("Toggle Live Apply", 1, 1, 0)  -- Tooltip title
+      GameTooltip:AddLine("Apply the active layout as people join the raid", 1, 1, 1, true)  -- Tooltip description
+      GameTooltip:Show()
+    end)
+
+    -- Add a script to handle hiding the tooltip
+    LiveToggle:SetScript("OnLeave", function()
       GameTooltip:Hide()
     end)
 
@@ -664,42 +734,66 @@ function ERS_RestoreRaid()
   end
 end
 
-function Matches()
+local function Matches()
   DidRaidMatch(GetCurrentRaidConfiguration(),saved_raid)
 end
 
 -- Register the ADDON_LOADED event
-local frame = CreateFrame("Frame","EasyRaidSaver")
-frame:RegisterEvent("ADDON_LOADED")
-frame:RegisterEvent("RAID_ROSTER_UPDATE")
-frame:RegisterEvent("PLAYER_ENTERING_WORLD")
-frame:SetScript("OnEvent", function ()
-  if event == "ADDON_LOADED" and arg1 == "EasyRaidSaver" then
-
-    EasyRaidSaverDB = EasyRaidSaverDB or {}
-    EasyRaidSaverDB.settings = EasyRaidSaverDB.settings or {}
-    EasyRaidSaverDB.templates = EasyRaidSaverDB.templates or {}
-
-    CreateRaidButtons()
-
-    local rgfu = RaidGroupFrame_Update
-    ERS_RaidGroupFrame_Update = function ()
-      rgfu()
-      UpdateInfoButton()
-    end
-    RaidGroupFrame_Update = ERS_RaidGroupFrame_Update
-
-    local rgonshow = RaidFrame:GetScript("OnShow")
-    RaidFrame:SetScript("OnShow", function ()
-      if rgonshow then rgonshow() end
-      UpdateButtonStates()
-    end)
-
-    UpdateButtonStates()
-  elseif event == "RAID_ROSTER_UPDATE" then
-    UpdateButtonStates()
-    -- DoNextQueueItem()
-  elseif event == "PLAYER_ENTERING_WORLD" then
-    UpdateButtonStates()
-  end
+EasyRaidSaver:RegisterEvent("ADDON_LOADED")
+EasyRaidSaver:SetScript("OnEvent", function ()
+  EasyRaidSaver[event](arg1,arg2,arg3,arg4,arg6,arg7,arg8,arg9,arg9,arg10)
 end)
+
+function EasyRaidSaver:Load()
+  EasyRaidSaverDB = EasyRaidSaverDB or {}
+  EasyRaidSaverDB.settings = EasyRaidSaverDB.settings or {}
+  EasyRaidSaverDB.templates = EasyRaidSaverDB.templates or {}
+
+  CreateRaidButtons()
+
+  local rgfu = RaidGroupFrame_Update
+  ERS_RaidGroupFrame_Update = function ()
+    rgfu()
+    UpdateInfoButton()
+  end
+  RaidGroupFrame_Update = ERS_RaidGroupFrame_Update
+
+  local rgonshow = RaidFrame:GetScript("OnShow")
+  RaidFrame:SetScript("OnShow", function ()
+    if rgonshow then rgonshow() end
+    UpdateButtonStates()
+  end)
+
+  UpdateButtonStates()
+end
+
+function EasyRaidSaver.ADDON_LOADED(addon)
+  if addon ~= "EasyRaidSaver" then return end
+  EasyRaidSaver:Load()
+  EasyRaidSaver:RegisterEvent("RAID_ROSTER_UPDATE")
+  EasyRaidSaver:RegisterEvent("PLAYER_ENTERING_WORLD")
+end
+
+function EasyRaidSaver.PLAYER_ENTERING_WORLD(addon)
+  UpdateButtonStates()
+end
+
+local last_count = GetNumRaidMembers()
+function EasyRaidSaver.RAID_ROSTER_UPDATE(addon)
+  UpdateButtonStates()
+  local current_count = GetNumRaidMembers()
+  if current_count == 0 then
+    -- raid over
+    EasyRaidSaverDB.settings.active_template = nil
+  end
+  if current_count > 0 and last_count ~= current_count then
+    print("count change")
+    last_count = current_count
+    -- print("live "..(EasyRaidSaverDB.settings.live_checked and "y" or "n"))
+    -- print("temp "..EasyRaidSaverDB.settings.active_template)
+    if EasyRaidSaverDB.settings.live_checked and EasyRaidSaverDB.settings.active_template and EasyRaidSaverDB.templates[EasyRaidSaverDB.settings.active_template] then
+      print("waf")
+      ConfigureRaid(ToSimpleConfig(EasyRaidSaverDB.templates[EasyRaidSaverDB.settings.active_template]))
+    end
+  end
+end
