@@ -56,23 +56,46 @@ shuffle_queue = {}
 local EasyRaidSaver = CreateFrame("Frame","EasyRaidSaver")
 local active_template = nil
 
+local count_roster_updates = false
+local updates = 0
+
+local role = {
+  ["Healer"] = true,
+  ["Melee"] = true,
+  ["Range"] = true,
+  ["Tank"] = true,
+}
+
+local class = {
+  ["Druid"] = true,
+  ["Hunter"] = true,
+  ["Mage"] = true,
+  ["Paladin"] = true,
+  ["Priest"] = true,
+  ["Rogue"] = true,
+  ["Shaman"] = true,
+  ["Warrior"] = true,
+  ["Warlock"] = true,
+}
+
+------------------------------
+-- Table Functions
+------------------------------
+
+local function member(tbl, item)
+  for _, value in ipairs(tbl) do
+    -- if type(value) == "string" and type(item) == "string" then
+    -- end
+    if value == item then
+        return true
+    end
+  end
+  return false
+end
+
 ------------------------------
 -- Raid Functions
 ------------------------------
-
--- Function to get the current raid configuration
-local function GetCurrentRaidConfiguration()
-  local currentConfig = {}
-  local raidUnits = {}
-  local classes = {}
-  for i = 1, GetNumRaidMembers() do
-    local name, _, subgroup, _, class = GetRaidRosterInfo(i)
-    currentConfig[name] = subgroup
-    raidUnits[name] = i
-    classes[name] = class
-  end
-  return currentConfig, raidUnits, classes
-end
 
 function MakeRaidConfiguration(config)
   local groups = {}
@@ -101,8 +124,10 @@ end
 local function StoredRaidConfigToTextRaw(name, temp)
   local config = temp
   local groups = {}
-
+  
   for i=1,8 do
+    -- order doens't actually matter comp-wise, sorting here is just for visual consistency
+    if config[i] then table.sort(config[i]) end
     table.insert(groups, "Group "..i..": " .. (config[i] and table.concat(config[i], ", ") or ""))
   end
 
@@ -167,18 +192,18 @@ function RandomizeRaid()
 end
 
 -- Function to find a member in a specific subgroup who is not in their desired subgroup
-local function FindMisplacedMemberInSubgroup(subgroup, config, desiredConfig, excludeName)
-  for name, group in pairs(config) do
-    if group == subgroup and name ~= excludeName and desiredConfig[name] ~= subgroup then
-      -- print(name)
-      return name
-    end
-  end
-  return nil
-end
+-- local function FindMisplacedMemberInSubgroup(subgroup, config, desiredConfig, excludeName)
+--   for name, group in pairs(config) do
+--     if group == subgroup and name ~= excludeName and desiredConfig[name] ~= subgroup then
+--       -- print(name)
+--       return name
+--     end
+--   end
+--   return nil
+-- end
 
 -- check raid for names, kick dupers
-function RemoveDupes()
+function ERSRemoveDupes()
   local t = {}
   for i=1,GetNumRaidMembers() do
     local name = GetRaidRosterInfo(i)
@@ -190,185 +215,36 @@ function RemoveDupes()
   end
 end
 
--- Function to move a member to their desired subgroup
--- local function MoveMemberSafely(name, desiredSubgroup, currentConfig, raidUnits, subgroupCount, desiredConfig, visited)
---   local currentSubgroup = currentConfig[name]
+local ROLE_MAP = {
+  ["Tank"] = { "Warrior", "Paladin", "Druid" },
+  ["Healer"] = { "Priest", "Paladin", "Druid", "Shaman" },
+  ["Melee"] = { "Warrior", "Rogue", "Paladin" },
+  ["Ranged"] = { "Hunter", "Mage", "Warlock" },
+  ["Caster"] = { "Mage", "Warlock", "Priest" },
+}
 
---   if currentSubgroup == desiredSubgroup then
---     return true
---   end
+-- Function to get the current raid configuration
+local function GetCurrentRaidConfiguration()
+  local currentConfig = {}
+  local raidUnits = {}
+  local classes = {}
+  local roles = {}
+  for i = 1, GetNumRaidMembers() do
+    local name, _, subgroup, _, class = GetRaidRosterInfo(i)
+    currentConfig[name] = subgroup
+    raidUnits[name] = i
+    classes[name] = class
+  end
+  for role,classList in pairs(ROLE_MAP) do
+    if member(classList, class) then
+      roles[name] = role
+      break
+    end
+  end
+  return currentConfig, raidUnits, classes, roles
+end
 
---   -- Prevent infinite loops by tracking visited members
---   if visited[name] then
---     return false
---   end
---   visited[name] = true
-
---   -- If the desired subgroup is not full, move directly
---   if subgroupCount[desiredSubgroup] < 5 then
---     SetRaidSubgroup(raidUnits[name], desiredSubgroup)
---     subgroupCount[currentSubgroup] = subgroupCount[currentSubgroup] - 1
---     subgroupCount[desiredSubgroup] = subgroupCount[desiredSubgroup] + 1
---     currentConfig[name] = desiredSubgroup
---     return true
---   else
---     -- Find a member in the desired subgroup to use as a temporary placeholder
---     local tempName = FindMisplacedMemberInSubgroup(desiredSubgroup, currentConfig, desiredConfig, name)
-    
---     if not tempName then
---       -- If no misplaced member is found, try to force a swap
---       for candidateName, group in pairs(currentConfig) do
---         if group == desiredSubgroup then
---           tempName = candidateName
---           break
---         end
---       end
---     end
-
---     -- Proceed with the swap if a member was found
---     if tempName then
---       SwapRaidSubgroup(raidUnits[name], raidUnits[tempName])
---       currentConfig[name], currentConfig[tempName] = currentConfig[tempName], currentConfig[name]
---       return MoveMemberSafely(tempName, desiredConfig[tempName], currentConfig, raidUnits, subgroupCount, desiredConfig, visited)
---     end
---   end
-  
---   return false
--- end
-
--- local function ConfigureRaid(desiredConfig)
---   local currentConfig, raidUnits = GetCurrentRaidConfiguration()
---   local subgroupCount = {}
-
---   if DEBUG then
---     RemoveDupes()
---   end
-
---   -- copy desired config, prune missing names, add new names
---   local tempDes = {}
---   for name, _ in pairs(desiredConfig) do
---       if currentConfig[name] then
---           tempDes[name] = desiredConfig[name]
---       end
---   end
---   for name, _ in pairs(currentConfig) do
---       if not desiredConfig[name] then
---           tempDes[name] = currentConfig[name]
---       end
---   end
-
---   -- Initialize subgroup counts
---   for i = 1, 8 do
---       subgroupCount[i] = 0
---   end
-
---   -- Count the number of members in each current subgroup
---   for _, subgroup in pairs(currentConfig) do
---       subgroupCount[subgroup] = subgroupCount[subgroup] + 1
---   end
-
---   -- Process each member in the desired configuration
---   local queue = {}
---   local queue_size = 0
---   for name, desiredSubgroup in pairs(tempDes) do
---       table.insert(queue, {name = name, desiredSubgroup = desiredSubgroup})
---       queue_size = queue_size + 1
---   end
-
---     -- Process each member in the desired configuration with cycle detection
---     for name, desiredSubgroup in pairs(tempDes) do
---       local visited = {}
---       if not MoveMemberSafely(name, desiredSubgroup, currentConfig, raidUnits, subgroupCount, tempDes, visited) then
---           ers_print("Failed to move " .. name .. " to the desired subgroup. Please screenshot the current raid and the raid layout.")
---       end
---   end
--- end
-
-
--- -- Function to find a member in a specific subgroup who is not in their desired subgroup
--- local function FindMisplacedMemberInSubgroup(subgroup, config, desiredConfig, excludeName)
---   for name, group in pairs(config) do
---     if group == subgroup and name ~= excludeName and desiredConfig[name] ~= subgroup then
---       print(name)
---       return name
---     end
---   end
---   return nil
--- end
-
--- -- Function to move a member to their desired subgroup
--- local function MoveMember(name, desiredSubgroup, currentConfig, raidUnits, subgroupCount, desiredConfig)
---   local currentSubgroup = currentConfig[name]
-
---   if currentSubgroup == desiredSubgroup then
---     print(name.."is in desired group")
---     return true
---   end
-
---   -- If the desired subgroup is not full, move directly
---   if subgroupCount[desiredSubgroup] < 5 then
---     local a = raidUnits[name]
---     local sg = desiredSubgroup
-
---     SetRaidSubgroup(raidUnits[name], desiredSubgroup)
---     subgroupCount[currentSubgroup] = subgroupCount[currentSubgroup] - 1
---     subgroupCount[desiredSubgroup] = subgroupCount[desiredSubgroup] + 1
---     currentConfig[name] = desiredSubgroup
---     return true
---   else
---     -- Find a member in the desired subgroup to use as a temporary placeholder
---     local tempName = FindMisplacedMemberInSubgroup(desiredSubgroup, currentConfig, desiredConfig, name)
---     if tempName then
---       local a = raidUnits[name]
---       local b = raidUnits[tempName]
---       -- Move the temporary member to the current subgroup
---       currentConfig[name], currentConfig[tempName] = currentConfig[tempName], currentConfig[name]
---       SwapRaidSubgroup(raidUnits[name], raidUnits[tempName])
---       return MoveMember(tempName, desiredConfig[tempName], currentConfig, raidUnits, subgroupCount, desiredConfig)
---     end
---   end
---   return false
--- end
-
--- -- Main function to configure the raid
--- local function ConfigureRaid(desiredConfig)
---   local currentConfig, raidUnits = GetCurrentRaidConfiguration()
---   local subgroupCount = {}
-
---   local c = 0
---   for k,_ in pairs(currentConfig) do
---     c = c + 1
---   end
---   print(c)
-
---   -- copy desired config, prune missing names, add new names
---   local tempDes = {}
---   for name,_ in pairs(desiredConfig) do
---     if currentConfig[name] then
---       tempDes[name] = desiredConfig[name]
---     end
---   end
---   for name,_ in pairs(currentConfig) do
---     if not desiredConfig[name] then
---       tempDes[name] = currentConfig[name]
---     end
---   end
-
---   -- Initialize subgroup counts
---   for i = 1, 8 do
---       subgroupCount[i] = 0
---   end
-
---   -- Count the number of members in each current subgroup
---   for _, subgroup in pairs(currentConfig) do
---     subgroupCount[subgroup] = subgroupCount[subgroup] + 1
---   end
-
---   for name, desiredSubgroup in pairs(tempDes) do
---     MoveMember(name, desiredSubgroup, currentConfig, raidUnits, subgroupCount, tempDes)
---   end
--- end
-
+-- I want to allow this to sort people into a slot by role, how can I do this.
 local function MoveDirectlyOrSwap(name, desiredSubgroup, currentConfig, raidUnits, subgroupCount, desiredConfig, visited)
   local currentSubgroup = currentConfig[name]
 
@@ -381,14 +257,7 @@ local function MoveDirectlyOrSwap(name, desiredSubgroup, currentConfig, raidUnit
   end
   visited[name] = true
 
-  if not subgroupCount[desiredSubgroup] then
-    print(desiredSubgroup)
-    for k,v in pairs(subgroupCount) do
-      print(k.." "..v)
-    end
-  end
-
-  if subgroupCount[desiredSubgroup] < 5 then
+  if subgroupCount[desiredSubgroup] and subgroupCount[desiredSubgroup] < 5 then
     SetRaidSubgroup(raidUnits[name], desiredSubgroup)
     subgroupCount[currentSubgroup] = subgroupCount[currentSubgroup] - 1
     subgroupCount[desiredSubgroup] = subgroupCount[desiredSubgroup] + 1
@@ -399,8 +268,8 @@ local function MoveDirectlyOrSwap(name, desiredSubgroup, currentConfig, raidUnit
     for tempName, tempSubgroup in pairs(currentConfig) do
       if tempSubgroup == desiredSubgroup and desiredConfig[tempName] ~= desiredSubgroup then
         -- Swap the members
-        print(name)
-        print(tempName)
+        print(raidUnits[name])
+        print(raidUnits[tempName])
         SwapRaidSubgroup(raidUnits[name], raidUnits[tempName])
         currentConfig[name], currentConfig[tempName] = currentConfig[tempName], currentConfig[name]
         return MoveDirectlyOrSwap(tempName, desiredConfig[tempName], currentConfig, raidUnits, subgroupCount, desiredConfig, visited)
@@ -411,23 +280,265 @@ local function MoveDirectlyOrSwap(name, desiredSubgroup, currentConfig, raidUnit
   return false
 end
 
+
+
+-- local function ConfigureRaid(desiredConfig)
+  -- local currentConfig, raidUnits, classes, roles = GetCurrentRaidConfiguration()
+  -- local subgroupCount = {}
+
+  -- -- TODO problem, this treats current config as desired, which isn't actually correct since it gives slots to people that shouldn't have them
+  -- -- copy desired config, prune missing names, add new names
+  -- local tempDes = {}
+  -- for name, _ in pairs(desiredConfig) do
+  --     if currentConfig[name] then
+  --         tempDes[name] = desiredConfig[name]
+  --     end
+  -- end
+  -- -- track raid members who are not in the config
+  -- local extras = {}
+  -- for name, id in pairs(currentConfig) do
+  --   if not desiredConfig[name] then
+  --     extras[name] = id
+  --   end
+  -- end
+
+  -- -- for name, _ in pairs(currentConfig) do
+  -- --     if not desiredConfig[name] then
+  -- --         tempDes[name] = currentConfig[name]
+  -- --     end
+  -- -- end
+
+  -- for i = 1, 8 do
+  --   subgroupCount[i] = 0
+  -- end
+
+  -- for _, subgroup in pairs(currentConfig) do
+  --   subgroupCount[subgroup] = subgroupCount[subgroup] + 1
+  -- end
+
+  -- -- First pass: Move as many members directly as possible
+  -- local queue = {}
+  -- local queue_c = 0
+  -- for name, desiredSubgroup in pairs(tempDes) do
+  --   table.insert(queue, {name = name, desiredSubgroup = desiredSubgroup})
+  --   queue_c = queue_c + 1
+  -- end
+
+  -- -- First Pass: Exact Name Placement
+  -- for name, desiredSubgroup in pairs(desiredConfig) do
+  --   if type(desiredSubgroup) == "number" and currentConfig[name] ~= desiredSubgroup then
+  --       local visited = {}
+  --       MoveDirectlyOrSwap(name, desiredSubgroup, currentConfig, raidUnits, subgroupCount, desiredConfig, visited)
+  --   end
+  -- end
+
+  -- -- Second Pass: Class and Role Placement
+  -- for name, desiredSubgroup in pairs(desiredConfig) do
+  --     if type(desiredSubgroup) ~= "number" then
+  --         for memberName, memberSubgroup in pairs(currentConfig) do
+  --             if desiredSubgroup == classes[memberName] or desiredSubgroup == roles[memberName] then
+  --                 local visited = {}
+  --                 MoveDirectlyOrSwap(memberName, currentConfig[name], currentConfig, raidUnits, subgroupCount, desiredConfig, visited)
+  --             end
+  --         end
+  --     end
+  -- end
+
+  -- while queue_c > 0 do
+  --   local moved = false
+  --   local remainingQueue = {}
+  --   local remainingQueue_c = 0
+
+  --   for _, entry in ipairs(queue) do
+  --     local name = entry.name
+  --     local desiredSubgroup = entry.desiredSubgroup
+  --     local visited = {}
+
+  --     if not MoveDirectlyOrSwap(name, desiredSubgroup, currentConfig, raidUnits, subgroupCount, tempDes, visited) then
+  --       table.insert(remainingQueue, entry)
+  --       remainingQueue_c = remainingQueue_c + 1
+  --     else
+  --       moved = true
+  --     end
+  --   end
+
+  --   if not moved then
+  --     -- No progress was made; perform a forced swap to break the deadlock
+  --     local entry = table.remove(remainingQueue, 1)
+  --     remainingQueue_c = remainingQueue_c - 1
+  --     local name = entry.name
+  --     local desiredSubgroup = entry.desiredSubgroup
+  --     local visited = {}
+
+  --     -- Force a swap with any member in the desired subgroup
+  --     for tempName, tempSubgroup in pairs(currentConfig) do
+  --       if tempSubgroup == desiredSubgroup then
+  --         SwapRaidSubgroup(raidUnits[name], raidUnits[tempName])
+  --         currentConfig[name], currentConfig[tempName] = currentConfig[tempName], currentConfig[name]
+  --         break
+  --       end
+  --     end
+  --   end
+
+  --   queue = remainingQueue
+  --   queue_c = remainingQueue_c
+  -- end
+-- end
+
+-- local function CountTableElements(tbl)
+--   local count = 0
+--   for _ in pairs(tbl) do
+--       count = count + 1
+--   end
+--   return count
+-- end
+
+-- local function ConfigureRaid(desiredConfig)
+--   local function RefreshAndValidateConfig()
+--       local currentConfig, raidUnits, classes, roles = GetCurrentRaidConfiguration()
+--       local validDesiredConfig = {}
+
+--       -- Validate and adjust desired configuration to remove any members who are no longer in the raid
+--       for desiredSubgroup, members in pairs(desiredConfig) do
+--           validDesiredConfig[desiredSubgroup] = {}
+--           for i, member in pairs(members) do
+--               if raidUnits[member] or classes[member] or roles[member] then
+--                   table.insert(validDesiredConfig[desiredSubgroup], member)
+--               end
+--           end
+--       end
+
+--       return currentConfig, raidUnits, classes, roles, validDesiredConfig
+--   end
+
+--   local currentConfig, raidUnits, classes, roles, validDesiredConfig = RefreshAndValidateConfig()
+--   local subgroupCount = {}
+
+--   -- Initialize subgroup counts
+--   for i = 1, 8 do
+--       subgroupCount[i] = 0
+--   end
+
+--   for _, subgroup in pairs(currentConfig) do
+--       subgroupCount[subgroup] = subgroupCount[subgroup] + 1
+--   end
+
+--   -- First Pass: Exact Name Placement
+--   for desiredSubgroup, members in pairs(validDesiredConfig) do
+--       for i, member in pairs(members) do
+--           if currentConfig[member] and currentConfig[member] ~= desiredSubgroup then
+--               local visited = {}
+--               MoveDirectlyOrSwap(member, desiredSubgroup, currentConfig, raidUnits, subgroupCount, validDesiredConfig, visited)
+--           end
+--       end
+--   end
+
+--   -- Second Pass: Class and Role Placement
+--   for desiredSubgroup, members in pairs(validDesiredConfig) do
+--       for i, member in pairs(members) do
+--           if not raidUnits[member] then  -- Ensure it's not a specific player already placed
+--               for memberName, memberSubgroup in pairs(currentConfig) do
+--                   if (member == classes[memberName] or member == roles[memberName]) and not validDesiredConfig[memberSubgroup][memberName] then
+--                       local visited = {}
+--                       MoveDirectlyOrSwap(memberName, desiredSubgroup, currentConfig, raidUnits, subgroupCount, validDesiredConfig, visited)
+--                   end
+--               end
+--           end
+--       end
+--   end
+
+--   -- Handle any remaining members by forced swaps if necessary
+--   local queue = {}
+--   local queueSize = 0
+--   for desiredSubgroup, members in pairs(validDesiredConfig) do
+--       for i, member in pairs(members) do
+--           if currentConfig[member] ~= desiredSubgroup and raidUnits[member] then  -- Ensure member is a real player
+--               queueSize = queueSize + 1
+--               queue[queueSize] = {name = member, desiredSubgroup = desiredSubgroup}
+--           end
+--       end
+--   end
+
+--   -- Process the queue until empty
+--   while queueSize > 0 do
+--       local entry = table.remove(queue, 1)
+--       queueSize = queueSize - 1
+--       local name = entry.name
+--       local desiredSubgroup = entry.desiredSubgroup
+
+--       -- Refresh and validate again before final processing
+--       currentConfig, raidUnits, classes, roles, validDesiredConfig = RefreshAndValidateConfig()
+
+--       -- Ensure the name is a valid raid member before attempting a swap
+--       if raidUnits[name] then
+--           -- Force a swap with any member in the desired subgroup
+--           for tempName, tempSubgroup in pairs(currentConfig) do
+--               if tempSubgroup == desiredSubgroup and raidUnits[tempName] then
+--                   SwapRaidSubgroup(raidUnits[name], raidUnits[tempName])
+--                   currentConfig[name], currentConfig[tempName] = currentConfig[tempName], currentConfig[name]
+--                   break
+--               end
+--           end
+--       end
+--   end
+-- end
+
 local function ConfigureRaid(desiredConfig)
-  local currentConfig, raidUnits = GetCurrentRaidConfiguration()
+  local function RefreshAndValidateConfig()
+    local currentConfig, raidUnits, classes, roles = GetCurrentRaidConfiguration()
+    local validDesiredConfig = {}
+
+    -- Validate and adjust desired configuration to remove any members who are no longer in the raid
+    for desiredSubgroup, members in pairs(desiredConfig) do
+      validDesiredConfig[desiredSubgroup] = {}
+      for i, member in pairs(members) do
+        if raidUnits[member] or classes[member] or roles[member] then
+          table.insert(validDesiredConfig[desiredSubgroup], member)
+        end
+      end
+    end
+
+    return currentConfig, raidUnits, classes, roles, validDesiredConfig
+  end
+
+  local function MoveDirectlyOrSwap(name, desiredSubgroup, currentConfig, raidUnits, subgroupCount, desiredConfig, visited)
+    local currentSubgroup = currentConfig[name]
+
+    if currentSubgroup == desiredSubgroup then
+      return true
+    end
+
+    if visited[name] then
+      return false
+    end
+    visited[name] = true
+
+    if subgroupCount[desiredSubgroup] and subgroupCount[desiredSubgroup] < 5 then
+      -- Move directly if there is space
+      SetRaidSubgroup(raidUnits[name], desiredSubgroup)
+      subgroupCount[currentSubgroup] = subgroupCount[currentSubgroup] - 1
+      subgroupCount[desiredSubgroup] = subgroupCount[desiredSubgroup] + 1
+      currentConfig[name] = desiredSubgroup
+      return true
+    else
+      -- Attempt to swap with a member that isn't supposed to be in the desired subgroup
+      for tempName, tempSubgroup in pairs(currentConfig) do
+        if tempSubgroup == desiredSubgroup and desiredConfig[tempSubgroup] and not member(desiredConfig[tempSubgroup], tempName) then
+          -- Swap the members
+          SwapRaidSubgroup(raidUnits[name], raidUnits[tempName])
+          currentConfig[name], currentConfig[tempName] = currentConfig[tempName], currentConfig[name]
+          return MoveDirectlyOrSwap(tempName, desiredConfig[tempSubgroup][1], currentConfig, raidUnits, subgroupCount, desiredConfig, visited)
+        end
+      end
+    end
+
+    return false
+  end
+
+  local currentConfig, raidUnits, classes, roles, validDesiredConfig = RefreshAndValidateConfig()
   local subgroupCount = {}
 
-    -- copy desired config, prune missing names, add new names
-    local tempDes = {}
-    for name, _ in pairs(desiredConfig) do
-        if currentConfig[name] then
-            tempDes[name] = desiredConfig[name]
-        end
-    end
-    for name, _ in pairs(currentConfig) do
-        if not desiredConfig[name] then
-            tempDes[name] = currentConfig[name]
-        end
-    end
-
+  -- Initialize subgroup counts
   for i = 1, 8 do
     subgroupCount[i] = 0
   end
@@ -436,52 +547,65 @@ local function ConfigureRaid(desiredConfig)
     subgroupCount[subgroup] = subgroupCount[subgroup] + 1
   end
 
-  -- First pass: Move as many members directly as possible
-  local queue = {}
-  local queue_c = 0
-  for name, desiredSubgroup in pairs(tempDes) do
-    table.insert(queue, {name = name, desiredSubgroup = desiredSubgroup})
-    queue_c = queue_c + 1
-  end
-
-  while queue_c > 0 do
-    local moved = false
-    local remainingQueue = {}
-    local remainingQueue_c = 0
-
-    for _, entry in ipairs(queue) do
-      local name = entry.name
-      local desiredSubgroup = entry.desiredSubgroup
-      local visited = {}
-
-      if not MoveDirectlyOrSwap(name, desiredSubgroup, currentConfig, raidUnits, subgroupCount, tempDes, visited) then
-        table.insert(remainingQueue, entry)
-        remainingQueue_c = remainingQueue_c + 1
-      else
-        moved = true
+  -- First Pass: Exact Name Placement
+  for desiredSubgroup, members in pairs(validDesiredConfig) do
+    for i, member in pairs(members) do
+      if currentConfig[member] and currentConfig[member] ~= desiredSubgroup then
+        local visited = {}
+        MoveDirectlyOrSwap(member, desiredSubgroup, currentConfig, raidUnits, subgroupCount, validDesiredConfig, visited)
       end
     end
+  end
 
-    if not moved then
-      -- No progress was made; perform a forced swap to break the deadlock
-      local entry = table.remove(remainingQueue, 1)
-      remainingQueue_c = remainingQueue_c - 1
-      local name = entry.name
-      local desiredSubgroup = entry.desiredSubgroup
-      local visited = {}
+  -- Second Pass: Class and Role Placement
+  for desiredSubgroup, members in pairs(validDesiredConfig) do
+    for i, member in pairs(members) do
+      if not raidUnits[member] then  -- Ensure it's not a specific player already placed
+        for memberName, memberSubgroup in pairs(currentConfig) do
+          if (member == classes[memberName] or member == roles[memberName]) and not member(validDesiredConfig[memberSubgroup], memberName) then
+            local visited = {}
+            MoveDirectlyOrSwap(memberName, desiredSubgroup, currentConfig, raidUnits, subgroupCount, validDesiredConfig, visited)
+          end
+        end
+      end
+    end
+  end
 
+  -- Handle any remaining members by forced swaps if necessary
+  local queue = {}
+  -- EasyRaidSaver.queue = {}
+  local queueSize = 0
+  for desiredSubgroup, members in pairs(validDesiredConfig) do
+    for i, member in pairs(members) do
+      if currentConfig[member] ~= desiredSubgroup and raidUnits[member] then  -- Ensure member is a real player
+        queueSize = queueSize + 1
+        queue[queueSize] = {name = member, desiredSubgroup = desiredSubgroup}
+        EasyRaidSaver.queue[queueSize] = {name = member, desiredSubgroup = desiredSubgroup}
+      end
+    end
+  end
+
+  -- Process the queue until empty
+  while queueSize > 0 do
+    local entry = table.remove(queue, 1)
+    queueSize = queueSize - 1
+    local name = entry.name
+    local desiredSubgroup = entry.desiredSubgroup
+
+    -- Refresh and validate again before final processing
+    currentConfig, raidUnits, classes, roles, validDesiredConfig = RefreshAndValidateConfig()
+
+    -- Ensure the name is a valid raid member before attempting a swap
+    if raidUnits[name] then
       -- Force a swap with any member in the desired subgroup
       for tempName, tempSubgroup in pairs(currentConfig) do
-        if tempSubgroup == desiredSubgroup then
+        if tempSubgroup == desiredSubgroup and raidUnits[tempName] then
           SwapRaidSubgroup(raidUnits[name], raidUnits[tempName])
           currentConfig[name], currentConfig[tempName] = currentConfig[tempName], currentConfig[name]
           break
         end
       end
     end
-
-    queue = remainingQueue
-    queue_c = remainingQueue_c
   end
 end
 
@@ -646,7 +770,7 @@ local function CreateRaidButtons()
     bg:SetTexture(0, 0, 0, 0.7) -- Black background with some transparency
 
     EditBox:SetScript("OnEscapePressed", function ()
-      EditBox:ClearFocus()
+      this:ClearFocus()
     end)
 
     -- OnTextChanged
@@ -669,7 +793,9 @@ local function CreateRaidButtons()
     UIDropDownMenu_SetWidth(170,MyDropdown)
 
     MyDropdown:SetScript("OnShow", function ()
-      if UIDropDownMenu_GetSelectedID(MyDropdown) then
+      local selection = UIDropDownMenu_GetSelectedName(MyDropdown)
+      if selection then
+        -- run selection function?
         EditBox:Show()
       end
     end)
@@ -820,11 +946,17 @@ local function CreateRaidButtons()
       local name = UIDropDownMenu_GetSelectedName(MyDropdown)
       if EasyRaidSaverDB.templates[name] then
         local simple = ToSimpleConfig(EasyRaidSaverDB.templates[name])
-        ConfigureRaid(simple)
+        -- ConfigureRaid(simple)
+        ConfigureRaid(EasyRaidSaverDB.templates[name])
+        -- ConfigureRaid(EasyRaidSaverDB.templates[name])
         ers_print("Applying layout: " .. name)
+        count_roster_updates = true
         if DEBUG then
-          RemoveDupes()
-          DidRaidMatch(simple,GetCurrentRaidConfiguration())
+          ERSRemoveDupes()
+          if DidRaidMatch(simple,GetCurrentRaidConfiguration()) then
+            print(updates)
+            count_roster_updates = false
+          end
         end
         EasyRaidSaverDB.settings.active_template = name
         SetCheckboxGreyed(ERSLiveToggle,not EasyRaidSaverDB.settings.active_template)
@@ -862,7 +994,7 @@ local function CreateRaidButtons()
     LiveToggle:SetScript("OnEnter", function()
       GameTooltip:SetOwner(this, "ANCHOR_RIGHT")
       GameTooltip:SetText("Toggle Live Apply", 1, 1, 0)  -- Tooltip title
-      GameTooltip:AddLine("Apply the active layout as people join the raid", 1, 1, 1, true)  -- Tooltip description
+      GameTooltip:AddLine("Re-apply the Applied layout as people join the raid", 1, 1, 1, true)  -- Tooltip description
       GameTooltip:Show()
     end)
 
@@ -874,9 +1006,6 @@ local function CreateRaidButtons()
   end
   CreateConfigArea()
 end
-
--- TODO change taunt resist report
--- make masterloot reminder more selective
 
 local function UpdateInfoButton()
   if GetNumRaidMembers() > 0 then
@@ -980,6 +1109,11 @@ end
 
 local last_count = GetNumRaidMembers()
 function EasyRaidSaver.RAID_ROSTER_UPDATE(addon)
+
+  if next() then
+  end
+
+  if count_roster_updates then updates = updates + 1 end
   UpdateButtonStates()
   local current_count = GetNumRaidMembers()
   if current_count == 0 then
@@ -987,12 +1121,12 @@ function EasyRaidSaver.RAID_ROSTER_UPDATE(addon)
     EasyRaidSaverDB.settings.active_template = nil
   end
   if current_count > 0 and last_count ~= current_count then
-    print("count change")
+    -- print("count change")
     last_count = current_count
     -- print("live "..(EasyRaidSaverDB.settings.live_checked and "y" or "n"))
     -- print("temp "..EasyRaidSaverDB.settings.active_template)
     if EasyRaidSaverDB.settings.live_checked and EasyRaidSaverDB.settings.active_template and EasyRaidSaverDB.templates[EasyRaidSaverDB.settings.active_template] then
-      print("waf")
+      -- print("waf")
       ConfigureRaid(ToSimpleConfig(EasyRaidSaverDB.templates[EasyRaidSaverDB.settings.active_template]))
     end
   end
