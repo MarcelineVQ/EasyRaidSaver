@@ -101,17 +101,10 @@ function MakeRaidConfiguration(config)
   local groups = {}
   for name,group in pairs(config) do
     if not groups[group] then groups[group] = {} end
-    table.insert(groups[group], name)
-    -- print(name  .. ">>".. group)
+    table.insert(groups[group], { name })
   end
   return groups
 end
-
-function StoreRaidConfiguration(name,config)
-  local r = MakeRaidConfiguration(config)
-  EasyRaidSaverDB.templates[name] = r
-end
-
 
 -- option to set assistants
 -- option to auto-shift spriests around
@@ -122,70 +115,29 @@ end
 -- default templates to order people by class to make optimal groups automatically
 -- fuller ui allowing you to specify who is in raid by text but then edit it by dragging
 
-local function StoredRaidConfigToTextRaw(name, temp)
-  local config = temp
+local function RaidConfigToText(name, config)
   local groups = {}
-  
-  for i=1,8 do
-    -- order doens't actually matter comp-wise, sorting here is just for visual consistency
-    if config[i] then table.sort(config[i]) end
-    table.insert(groups, "Group "..i..": " .. (config[i] and table.concat(config[i], ", ") or ""))
+
+  for group,slots in ipairs(config) do
+    local t = {}
+    for i,slot in ipairs(slots) do
+      table.insert(t,table.concat(slot,">"))
+    end
+    table.insert(groups, "Group "..group..": "..table.concat(t,", "))
   end
 
   local sum = "Layout Name: " .. name .. "\n\n" .. table.concat(groups,"\n")
+  -- print(sum)
   return sum
 end
 
 local function StoredRaidConfigToText(name)
   local config = EasyRaidSaverDB.templates[name]
   if not config then return end
-  return StoredRaidConfigToTextRaw(name, config)
+  return RaidConfigToText(name, config)
 end
 
-local function ToSimpleConfig(config)
-  local temp = {}
-  for i,group in pairs(config) do
-    for _,member in pairs(group) do
-      temp[member] = i
-      -- print(member .. "<<" .. i)
-    end
-  end
-
-  return temp
-end
-
-local function TextToBasicRaidConfig(text)
-  if not text then return end
-
-  local lower_text = string.lower(text)
-
-  local s,e,template_name = string.find(lower_text,"layout%s*name%s*:%s*([%w _]+)\n*")
-  if not s then return end
-  -- grab the capitalized version
-  local _,_,template_name = string.find(string.sub(text,s,e),":%s*([%w _]+)\n*")
-  -- print("tn "..template_name)
-
-  local rest = string.sub(lower_text,e)
-  -- print(rest)
-  local config = {}
-  for gnum,members in string.gfind(rest,"[ ]*group%s*(%d+):([%w ,]+)") do
-    -- print(gnum .. " _ ".. members)
-    -- print("num:"..gnum)
-    -- print("mem:"..members)
-    if gnum ~= "" and members ~= "" then
-      for member in string.gfind(members,"%s*(%w+)%s*[,]*%s*") do
-        member = string.upper(string.sub(member,1,1)) .. string.lower(string.sub(member,2))
-        -- print("member " .. member .. " : gnum " .. gnum)
-        config[member] = tonumber(gnum)
-      end
-    end
-  end
-
-  -- local r = MakeRaidConfiguration(config)
-  return config,template_name
-end
-
-local function TextToRaidConfig(text)
+function TextToRaidConfig(text)
   if not text then return end
 
   local lower_text = string.lower(text)
@@ -197,18 +149,37 @@ local function TextToRaidConfig(text)
 
   local rest = string.sub(lower_text,e)
   local config = {}
-  for gnum,members in string.gfind(rest,"[ ]*group%s*(%d+):([%w ,]+)") do
+  for i=1,8 do
+    config[i] = {}
+  end
+  for gnum,members in string.gfind(rest,"[ ]*group%s*(%d+):([%w> ,]+)") do
     gnum = tonumber(gnum)
     if gnum and members ~= "" then
-      config[gnum] = config[gnum] or {}
-      for member in string.gfind(members,"%s*(%w+)%s*[,]*%s*") do
-        member = string.upper(string.sub(member,1,1)) .. string.lower(string.sub(member,2))
-        table.insert(config[gnum],member)
+      local ix = 1
+      for member in string.gfind(members,"%s*([%w>]+)%s*[,]*%s*") do
+        -- split on >
+        config[gnum][ix] = config[gnum][ix] or {}
+        for part in string.gfind(member,"(%w+)>?") do
+          part = string.upper(string.sub(part,1,1)) .. string.lower(string.sub(part,2))
+          table.insert(config[gnum][ix],part)
+        end
+        ix = ix + 1
       end
     end
   end
+  -- TODO do a wf search now
 
   return config,template_name
+end
+
+function printconf2(conf)
+  for group,slots in pairs(conf) do
+    local t = {}
+    for i,slot in ipairs(slots) do
+      table.insert(t,table.concat(slot,">"))
+    end
+    print("Group "..group..": "..table.concat(t,","))
+  end
 end
 
 function RandomizeRaid()
@@ -357,7 +328,7 @@ local function ConfigureRaid(desiredConfig)
   end
 end
 
--- DEBUG = 1
+-- take a layout and arrange it into a table of groups of currently existing raid members
 function ArrangeRaid(desiredConfig)
   local layout = desiredConfig
   local groups = {}
@@ -377,19 +348,22 @@ function ArrangeRaid(desiredConfig)
 
   -- Function to check if a name is a generic role
   local function isSpecial(name)
-    -- local roles = { "Melee", "Shaman", "Hunter", "Healer", "Rogue", "Tank" }
-    if roleEnum[name] or classEnum[name] then return true end
-    return false
+    return roleEnum[name] or classEnum[name]
   end
 
-  -- Place specific names in their designated groups
-  for groupNumber=1,8  do
+  -- Place specific names in their designated groups based on priority
+  for groupNumber = 1, 8 do
     local members = layout[groupNumber] or {}
-    for _, name in ipairs(members) do
-      if DEBUG and isSpecial(name) then print("saw a special: "..name) end
-      if not isSpecial(name) and raidSet[name] then
-        table.insert(groups[groupNumber], name)
-        raidSet[name] = nil  -- Mark the name as used
+    for _, slotOptions in ipairs(members) do
+      local filledSlot = false
+      for _, name in ipairs(slotOptions) do
+        if DEBUG and isSpecial(name) then print("saw a special: " .. name) end
+        if not isSpecial(name) and raidSet[name] then
+          table.insert(groups[groupNumber], raidUnits[name])
+          raidSet[name] = nil -- Mark the name as used
+          filledSlot = true
+          break
+        end
       end
     end
   end
@@ -401,20 +375,24 @@ function ArrangeRaid(desiredConfig)
   end
   if DEBUG then print("unnamed count: "..getn(remainingMembers)) end
 
-  -- Fill generic roles with remaining members
-  for groupNumber=1,8 do
+  -- Fill generic roles with remaining members based on priority
+  for groupNumber = 1, 8 do
     local members = layout[groupNumber] or {}
-    for _, name in ipairs(members) do
-      if isSpecial(name) and next(remainingMembers) then
-        if DEBUG then print("placing special: "..name) end
-        -- search remainingMembers for a role filler
-        for i,n in ipairs(remainingMembers) do
-          if roles[n] == name or classes[n] == name then
-            if DEBUG then print("placed "..n.." as "..name.." in "..groupNumber) end
-            table.insert(groups[groupNumber], table.remove(remainingMembers, i))
-            break
+    for _, slotOptions in ipairs(members) do
+      local filledSlot = false
+      for _, name in ipairs(slotOptions) do
+        if isSpecial(name) and next(remainingMembers) then
+          -- search remainingMembers for a role filler
+          for i, n in ipairs(remainingMembers) do
+            if roles[n] == name or classes[n] == name then
+              if DEBUG then print("placed " .. n .. " as " .. name .. " in " .. groupNumber) end
+              table.insert(groups[groupNumber], table.remove(remainingMembers, i))
+              filledSlot = true
+              break
+            end
           end
         end
+        if filledSlot then break end
       end
     end
   end
@@ -446,6 +424,104 @@ function ArrangeRaid(desiredConfig)
   end
   return t
 end
+
+function ArrangeRaid(desiredConfig)
+  local layout = desiredConfig
+  local groups = {}
+  local remainingMembers = {}
+  local currentRaid, raidUnits, classes, roles = GetCurrentRaidConfiguration()
+
+  -- Initialize groups
+  for i = 1, 8 do
+    groups[i] = {}
+  end
+
+  -- Convert the current raid list to a set of names for easy lookup
+  local raidSet = {}
+  for name, _ in pairs(currentRaid) do
+    raidSet[name] = true
+  end
+
+  -- Function to check if a name is a role or class
+  local function isSpecial(name)
+    return roleEnum[name] or classEnum[name]
+  end
+
+  -- First pass: Place the first specific name in each slot if possible
+  for groupNumber = 1, 8 do
+    local members = layout[groupNumber] or {}
+    for _, slotOptions in ipairs(members) do
+      local firstOption = slotOptions[1]
+      if firstOption and not isSpecial(firstOption) and raidSet[firstOption] then
+        table.insert(groups[groupNumber], firstOption)
+        raidSet[firstOption] = nil -- Mark the name as used
+      end
+    end
+  end
+
+  -- Collect remaining raid members after specific names are placed
+  for name, _ in pairs(raidSet) do
+      table.insert(remainingMembers, name)
+  end
+
+  -- Second pass: Fill roles with remaining members based on priority, with fallback
+  for groupNumber = 1, 8 do
+    local members = layout[groupNumber] or {}
+    for _, slotOptions in ipairs(members) do
+      if getn(groups[groupNumber]) < 5 then
+        local filledSlot = false
+        -- Start with the first option if it's a role, then try other options
+        for _, name in ipairs(slotOptions) do
+          if isSpecial(name) then
+            -- Try to fill with an appropriate remaining member
+            for i, n in ipairs(remainingMembers) do
+              if roles[n] == name or classes[n] == name then
+                table.insert(groups[groupNumber], table.remove(remainingMembers, i))
+                filledSlot = true
+                break -- Role is filled, stop checking further options
+              end
+            end
+          elseif raidSet[name] then
+            -- Fallback to specific name if role/class isn't filled
+            table.insert(groups[groupNumber], name)
+            raidSet[name] = nil -- Mark the name as used
+            filledSlot = true
+            break
+          end
+          if filledSlot then break end
+        end
+      end
+    end
+  end
+
+  -- If any members are still left, place them in the first available slot
+  local groupIdx = 1
+  while getn(remainingMembers) > 0 do
+    if getn(groups[groupIdx]) < 5 then
+      table.insert(groups[groupIdx], table.remove(remainingMembers, 1))
+    else
+      groupIdx = groupIdx + 1
+    end
+  end
+
+  -- Debugging output
+  if DEBUG then
+    for i = 1, 8 do
+      print("Group " .. i .. ": " .. table.concat(groups[i], ", "))
+    end
+  end
+
+  -- Return the simple layout here, so a list of names and their group number
+  local t = {}
+  for g, members in ipairs(groups) do
+    for _, member in ipairs(members) do
+      t[member] = g
+    end
+  end
+  return t
+end
+
+
 
 local function DidRaidMatch(first,second)
   for name,subgroup in pairs(first) do
@@ -594,21 +670,44 @@ local function CreateRaidButtons()
     EditBox:SetMultiLine(true)
     EditBox:SetAutoFocus(false) -- Prevent the box from auto-focusing
     EditBox:SetFontObject(GameFontNormal)
-    EditBox:SetWidth(380)
+    EditBox:SetWidth(180)
     EditBox:SetHeight(140) -- Set a large height to enable scrolling
     EditBox:SetText("Raid Layout")
     EditBox:SetPoint("LEFT", RaidFrame,"RIGHT", 0, 150)
     EditBox:Hide()
-
+   
     -- Add a background to the frame
     local bg = EditBox:CreateTexture(nil, "BACKGROUND")
+    bg:SetPoint("LEFT", EditBox,"LEFT", 0, 0)
     bg:SetPoint("LEFT", EditBox,"LEFT", 0, 0)
     bg:SetWidth(EditBox:GetWidth())
     bg:SetHeight(EditBox:GetHeight())
     bg:SetTexture(0, 0, 0, 0.7) -- Black background with some transparency
 
+    -- dynamic size
+    local measureFontString = EditBox:CreateFontString(nil, "ARTWORK", "GameFontNormal")
+    measureFontString:Hide()
+    measureFontString:SetFontObject(EditBox:GetFontObject())
+
+    function EditBox:Display()
+      local text = self:GetText()
+      measureFontString:SetText(text)
+      local width = measureFontString:GetStringWidth()
+      local _,lines = string.gsub(text,"\n","")
+      local font = self:GetFontObject()
+      local _,font_size = font:GetFont()
+      local height = (lines + 1) * font_size + 10
+
+      self:SetWidth(max(width,200))
+      self:SetHeight(max(height,90))
+      bg:SetHeight(self:GetHeight())
+      bg:SetWidth(self:GetWidth())
+      self:Show()
+    end
+
     EditBox:SetScript("OnEscapePressed", function ()
       this:ClearFocus()
+      this:Display()
     end)
 
     -- OnTextChanged
@@ -634,7 +733,7 @@ local function CreateRaidButtons()
       local selection = UIDropDownMenu_GetSelectedName(MyDropdown)
       if selection then
         -- run selection function?
-        EditBox:Show()
+        EditBox:Display()
       end
     end)
 
@@ -672,7 +771,7 @@ local function CreateRaidButtons()
             EditBox:SetText(conf)
             UIDropDownMenu_SetSelectedName(MyDropdown, this:GetText())
             EasyRaidSaverDB.settings.last_template_selection = this:GetText()
-            EditBox:Show()
+            EditBox:Display()
           end
         end
         -- info.hasArrow = (UIDropDownMenu_GetSelectedName(MyDropdown) == info.text) and 1 or nil
@@ -687,9 +786,9 @@ local function CreateRaidButtons()
       info.func = function ()
         if EasyRaidSaverDB.saved_raid then
           local config = MakeRaidConfiguration(EasyRaidSaverDB.saved_raid)
-          EditBox:SetText(StoredRaidConfigToTextRaw("last_raid_quicksave", config))
+          EditBox:SetText(RaidConfigToText("last_raid_quicksave", config))
           UIDropDownMenu_SetSelectedName(MyDropdown, this:GetText())
-          EditBox:Show()
+          EditBox:Display()
         end
       end
       UIDropDownMenu_AddButton(info, level)
@@ -713,9 +812,9 @@ local function CreateRaidButtons()
       info.textB = 0 -- yellow
       info.func = function ()
         local config = MakeRaidConfiguration(GetCurrentRaidConfiguration())
-        EditBox:SetText(StoredRaidConfigToTextRaw("new layout", config))
+        EditBox:SetText(RaidConfigToText("new layout", config))
         UIDropDownMenu_SetSelectedName(MyDropdown, this:GetText())
-        EditBox:Show()
+        EditBox:Display()
       end
       UIDropDownMenu_AddButton(info, level)
       -- EasyRaidSaverDB.settings.last_templte = UIDropDownMenu_GetSelectedValue(MyDropdown)
@@ -734,11 +833,9 @@ local function CreateRaidButtons()
     SaveTemplateButton:SetPoint("LEFT", MyDropdown, "RIGHT", -10, 3) -- Position relative to RaidFrame
     SaveTemplateButton:SetText("Save")
     SaveTemplateButton:SetScript("OnClick", function()
-      -- local conf,name = TextToBasicRaidConfig(EditBox:GetText())
       local conf,name = TextToRaidConfig(EditBox:GetText())
 
       if conf then
-        -- StoreRaidConfiguration(name, conf)
         EasyRaidSaverDB.templates[name] = conf
         UIDropDownMenu_Initialize(MyDropdown, MyDropdown_Initialize)
         UIDropDownMenu_SetSelectedName(MyDropdown, name)
@@ -911,7 +1008,7 @@ end
 -- Register the ADDON_LOADED event
 EasyRaidSaver:RegisterEvent("ADDON_LOADED")
 EasyRaidSaver:SetScript("OnEvent", function ()
-  EasyRaidSaver[event](arg1,arg2,arg3,arg4,arg6,arg7,arg8,arg9,arg9,arg10)
+  EasyRaidSaver[event](this,arg1,arg2,arg3,arg4,arg6,arg7,arg8,arg9,arg9,arg10)
 end)
 
 function EasyRaidSaver:Load()
@@ -937,42 +1034,19 @@ function EasyRaidSaver:Load()
   UpdateButtonStates()
 end
 
-function EasyRaidSaver.ADDON_LOADED(addon)
+function EasyRaidSaver:ADDON_LOADED(addon)
   if addon ~= "EasyRaidSaver" then return end
   EasyRaidSaver:Load()
   EasyRaidSaver:RegisterEvent("RAID_ROSTER_UPDATE")
   EasyRaidSaver:RegisterEvent("PLAYER_ENTERING_WORLD")
 end
 
-function EasyRaidSaver.PLAYER_ENTERING_WORLD(addon)
+function EasyRaidSaver:PLAYER_ENTERING_WORLD()
   UpdateButtonStates()
 end
 
 local last_count = GetNumRaidMembers()
-function EasyRaidSaver.RAID_ROSTER_UPDATE(addon)
-
-  if next(EasyRaidSaver.queue or {}) then
-    print("doing next")
-    local entry = table.remove(EasyRaidSaver.queue, 1)
-    local name = entry.name
-    local desiredSubgroup = entry.desiredSubgroup
-
-    -- Refresh and validate again before final processing
-    currentConfig, raidUnits, classes, roles, validDesiredConfig = RefreshAndValidateConfig()
-
-    -- Ensure the name is a valid raid member before attempting a swap
-    if raidUnits[name] then
-      -- Force a swap with any member in the desired subgroup
-      for tempName, tempSubgroup in pairs(currentConfig) do
-        if tempSubgroup == desiredSubgroup and raidUnits[tempName] then
-          SwapRaidSubgroup(raidUnits[name], raidUnits[tempName])
-          currentConfig[name], currentConfig[tempName] = currentConfig[tempName], currentConfig[name]
-          break
-        end
-      end
-    end
-  end
-
+function EasyRaidSaver:RAID_ROSTER_UPDATE()
   if count_roster_updates then updates = updates + 1 end
   UpdateButtonStates()
   local current_count = GetNumRaidMembers()
