@@ -42,5 +42,7 @@ The addon will attempt to auto-expand names for you when a unique choice exists.
 
 If the "Show/Hide the raid Layout Editor" arrow-button is green it means there's an active applied configuration and that auto-apply is also enabled which will re-order the raid any time the roster updates.  
 
+* addon is incomplete, `windfury` doesn't do anything currently for instance
+
 ___
 * Made by and for Weird Vibes of Turtle Wow  
